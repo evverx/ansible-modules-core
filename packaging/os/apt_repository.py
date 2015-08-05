@@ -63,6 +63,13 @@ options:
         required: false
         default: 'yes'
         choices: ['yes', 'no']
+    keyid_ppa:
+        required: false
+        choices: [ "yes", "no" ]
+        default: "no"
+        description:
+            - If C(yes), the GPG key's ID will be looked up from ppa.launchpad.net and removed.
+
 author: "Alexander Saltanov (@sashka)"
 version_added: "0.7"
 requirements: [ python-apt ]
@@ -327,9 +334,10 @@ class UbuntuSourcesList(SourcesList):
 
     LP_API = 'https://launchpad.net/api/1.0/~%s/+archive/%s'
 
-    def __init__(self, module, add_ppa_signing_keys_callback=None):
+    def __init__(self, module, add_ppa_signing_keys_callback=None, remove_ppa_signing_keys_callback=None):
         self.module = module
         self.add_ppa_signing_keys_callback = add_ppa_signing_keys_callback
+        self.remove_ppa_signing_keys_callback = remove_ppa_signing_keys_callback
         super(UbuntuSourcesList, self).__init__(module)
 
     def _get_ppa_info(self, owner_name, ppa_name):
@@ -378,7 +386,12 @@ class UbuntuSourcesList(SourcesList):
 
     def remove_source(self, line):
         if line.startswith('ppa:'):
-            source = self._expand_ppa(line)[0]
+            source, ppa_owner, ppa_name = self._expand_ppa(line)
+            if self.remove_ppa_signing_keys_callback is not None and self.module.params['keyid_ppa']:
+                info = self._get_ppa_info(ppa_owner, ppa_name)
+                if self._key_already_exists(info['signing_key_fingerprint']):
+                  command = ['apt-key', 'del', info['signing_key_fingerprint'][-8:]]
+                  self.remove_ppa_signing_keys_callback(command)
         else:
             source = self._parse(line, raise_if_invalid_or_disabled=True)[2]
         self._remove_valid_source(source)
@@ -403,7 +416,7 @@ class UbuntuSourcesList(SourcesList):
         return _repositories
 
 
-def get_add_ppa_signing_key_callback(module):
+def get_ppa_signing_key_callback(module):
     def _run_command(command):
         module.run_command(command, check_rc=True)
 
@@ -423,6 +436,7 @@ def main():
             # this should not be needed, but exists as a failsafe
             install_python_apt=dict(required=False, default="yes", type='bool'),
             validate_certs = dict(default='yes', type='bool'),
+            keyid_ppa=dict(required=False, default="no", type='bool'),
         ),
         supports_check_mode=True,
     )
@@ -441,7 +455,8 @@ def main():
 
     if isinstance(distro, aptsources_distro.UbuntuDistribution):
         sourceslist = UbuntuSourcesList(module,
-            add_ppa_signing_keys_callback=get_add_ppa_signing_key_callback(module))
+            add_ppa_signing_keys_callback=get_ppa_signing_key_callback(module),
+            remove_ppa_signing_keys_callback=get_ppa_signing_key_callback(module))
     elif isinstance(distro, aptsources_distro.Distribution):
         sourceslist = SourcesList(module)
     else:
