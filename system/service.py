@@ -502,6 +502,13 @@ class LinuxService(Service):
         if location.get('initctl', False):
             self.svc_initctl = location['initctl']
 
+    def systemd_unmask_service(self):
+        (rc, out, err) = self.execute_command("%s unmask %s" % (self.enable_cmd, self.__systemd_unit,))
+
+    def get_systemd_service_masked(self):
+        (rc, out, err) = self.execute_command("%s show --property LoadState %s" % (self.enable_cmd, self.__systemd_unit,))
+        return 'LoadState=masked' in out
+
     def get_systemd_service_enabled(self):
         def sysv_exists(name):
             script = '/etc/init.d/' + name
@@ -514,6 +521,8 @@ class LinuxService(Service):
         (rc, out, err) = self.execute_command("%s is-enabled %s" % (self.enable_cmd, service_name,))
         if rc == 0:
             return True
+        elif 'masked' in out:
+            return False
         elif sysv_exists(service_name):
             return sysv_is_enabled(service_name)
         else:
@@ -735,9 +744,10 @@ class LinuxService(Service):
 
             # Check if we're already in the correct state
             service_enabled = self.get_systemd_service_enabled()
+            service_masked = self.get_systemd_service_masked()
 
             # self.changed should already be true
-            if self.enable == service_enabled:
+            if not service_masked and self.enable == service_enabled:
                 self.changed = False
                 return
 
@@ -852,18 +862,20 @@ class LinuxService(Service):
         #
         self.changed = True
 
+        if self.module.check_mode:
+            self.module.exit_json(changed=self.changed)
+
         # we change argument order depending on real binary used:
         # rc-update and systemctl need the argument order reversed
 
         if self.enable_cmd.endswith("rc-update"):
             args = (self.enable_cmd, action, self.name + " " + self.runlevel)
         elif self.enable_cmd.endswith("systemctl"):
+            if self.get_systemd_service_masked():
+                self.systemd_unmask_service()
             args = (self.enable_cmd, action, self.__systemd_unit)
         else:
             args = (self.enable_cmd, self.name, action)
-
-        if self.module.check_mode:
-            self.module.exit_json(changed=self.changed)
 
         (rc, out, err) = self.execute_command("%s %s %s" % args)
         if rc != 0:
